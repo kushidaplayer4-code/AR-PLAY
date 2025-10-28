@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>AR PLAY 3Dモデル 回転＆ピンチ完全版</title>
+<script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.0/aframe/build/aframe-ar.js"></script>
+<style>
+  body { margin:0; overflow:hidden; background:#000; }
+  #info { position:absolute; top:10px; left:10px; color:white; font-family:sans-serif; background:rgba(0,0,0,0.5); padding:8px 12px; border-radius:8px; z-index:999; }
+  button { position:absolute; bottom:10px; padding:8px 14px; border:none; border-radius:8px; font-size:16px; color:white; cursor:pointer; z-index:1000; }
+  #toggle { left:10px; background:#007bff; }
+</style>
+</head>
+<body>
+<div id="info">現在地を取得中...</div>
+<button id="toggle">テストモード中（切替）</button>
+
+<a-scene embedded
+         arjs="sourceType: webcam; debugUIEnabled: false; resolution: 640"
+         renderer="antialias: true; precision: highp; preserveDrawingBuffer: true">
+
+  <a-light type="ambient" intensity="0.8"></a-light>
+  <a-light type="directional" intensity="0.5" position="0 5 5"></a-light>
+
+  <a-entity id="model" visible="false"
+            gltf-model="./gyu.glb"
+            material="metalness:0; roughness:1"
+            dracoDecoderPath="https://www.gstatic.com/draco/versioned/decoders/1.5.6/"
+            position="0 0 -2" scale="0.5 0.5 0.5" rotation="0 0 0">
+  </a-entity>
+
+  <a-camera></a-camera>
+</a-scene>
+
+<script>
+const TARGET = { name:"大代地区公民館", lat:38.29667, lon:141.01084, message:"大代地区公民館にようこそ！" };
+const RANGE = 100;
+let testMode = true;
+const info = document.getElementById("info");
+const model = document.getElementById("model");
+const toggleBtn = document.getElementById("toggle");
+
+// 距離計算
+function distance(lat1, lon1, lat2, lon2){
+  const R=6371e3, φ1=lat1*Math.PI/180, φ2=lat2*Math.PI/180, Δφ=(lat2-lat1)*Math.PI/180, Δλ=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// 位置チェック
+function checkLocation(pos){
+  const { latitude, longitude } = pos.coords;
+  const dist = distance(latitude, longitude, TARGET.lat, TARGET.lon);
+  info.textContent = `現在地: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
+  if(dist < RANGE){
+    model.setAttribute("visible","true");
+    info.textContent = `${TARGET.message}（距離${dist.toFixed(1)}m）`;
+  } else model.setAttribute("visible","false");
+}
+
+function startTracking(){
+  if(testMode) checkLocation({ coords:{ latitude:TARGET.lat, longitude:TARGET.lon } });
+  else if(navigator.geolocation) navigator.geolocation.watchPosition(checkLocation, ()=>info.textContent="位置情報が取得できません");
+  else info.textContent="位置情報がサポートされていません";
+}
+
+// モード切替
+toggleBtn.onclick = ()=>{
+  testMode = !testMode;
+  toggleBtn.textContent = testMode ? "テストモード中（切替）" : "実際の位置情報モード中（切替）";
+  model.setAttribute("visible","false");
+  startTracking();
+};
+
+// 指1本でX/Y/Z回転
+let rotating = false, lastTouch = null;
+document.addEventListener("touchstart", e=>{
+  if(e.touches.length === 1 && model.getAttribute("visible")==="true"){
+    rotating = true;
+    lastTouch = { x:e.touches[0].clientX, y:e.touches[0].clientY };
+  }
+});
+document.addEventListener("touchmove", e=>{
+  if(rotating && e.touches.length === 1){
+    const dx = e.touches[0].clientX - lastTouch.x;
+    const dy = e.touches[0].clientY - lastTouch.y;
+    const rot = model.getAttribute("rotation");
+    model.setAttribute("rotation", {
+      x: rot.x - dy*0.5,   // 上下でX軸
+      y: rot.y + dx*0.5,   // 左右でY軸
+      z: rot.z             // Z軸は2本指で
+    });
+    lastTouch = { x:e.touches[0].clientX, y:e.touches[0].clientY };
+  }
+});
+document.addEventListener("touchend", e=>{ rotating=false; });
+
+// 指2本でピンチ拡大縮小＋XYZ回転
+let twoFinger = { initialDistance:null, startTouches:null, startScale:0.5, startRot:null };
+document.addEventListener("touchstart", e=>{
+  if(e.touches.length === 2){
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    twoFinger.initialDistance = Math.hypot(dx, dy);
+    twoFinger.startTouches = [ {x:e.touches[0].clientX, y:e.touches[0].clientY}, {x:e.touches[1].clientX, y:e.touches[1].clientY} ];
+    twoFinger.startScale = parseFloat(model.getAttribute("scale").x);
+    twoFinger.startRot = {...model.getAttribute("rotation")};
+  }
+});
+
+document.addEventListener("touchmove", e=>{
+  if(e.touches.length === 2 && twoFinger.initialDistance){
+    // 拡大縮小
+    const dx = e.touches[0].clientX - e.touches[1].clientX;
+    const dy = e.touches[0].clientY - e.touches[1].clientY;
+    const distance = Math.hypot(dx, dy);
+    const newScale = Math.min(Math.max(twoFinger.startScale * (distance / twoFinger.initialDistance), 0.1), 3);
+    model.setAttribute("scale", `${newScale} ${newScale} ${newScale}`);
+
+    // 回転（X/Y/Z軸）
+    const midX = (e.touches[0].clientX + e.touches[1].clientX)/2;
+    const midY = (e.touches[0].clientY + e.touches[1].clientY)/2;
+    const startMidX = (twoFinger.startTouches[0].x + twoFinger.startTouches[1].x)/2;
+    const startMidY = (twoFinger.startTouches[0].y + twoFinger.startTouches[1].y)/2;
+    const rot = {...twoFinger.startRot};
+    rot.y = rot.y + (midX - startMidX)*0.5;
+    rot.x = rot.x - (midY - startMidY)*0.5;
+    // Z軸回転（2本指の角度変化）
+    const angle = Math.atan2(e.touches[1].clientY - e.touches[0].clientY, e.touches[1].clientX - e.touches[0].clientX) -
+                  Math.atan2(twoFinger.startTouches[1].y - twoFinger.startTouches[0].y, twoFinger.startTouches[1].x - twoFinger.startTouches[0].x);
+    rot.z = twoFinger.startRot.z + angle*180/Math.PI;
+    model.setAttribute("rotation", rot);
+  }
+});
+
+document.addEventListener("touchend", e=>{
+  if(e.touches.length < 2) twoFinger.initialDistance = null;
+});
+
+startTracking();
+</script>
+</body>
+</html>
